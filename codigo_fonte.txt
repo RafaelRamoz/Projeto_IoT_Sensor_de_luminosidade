@@ -1,0 +1,110 @@
+#include <ESP8266WiFi.h>
+#include <Adafruit_MQTT.h>
+#include <Adafruit_MQTT_Client.h>
+
+#define NETWORK_SSID "Familia-Novaes"
+#define NETWORK_PASSWORD "Marcos99"
+
+#define IO_SERVER      "io.adafruit.com"
+#define IO_PORT        1883
+#define IO_USERNAME    "Geovane_p"
+#define IO_KEY         "aio_QFze11RQrQNfSOwUsawKssGgqkJG"
+
+#define SENSOR_PIN A0
+#define ALERT_PIN D6
+#define BRIGHT_THRESHOLD 600
+#define NORMAL_THRESHOLD 1000
+
+WiFiClient wifiClient;
+Adafruit_MQTT_Client mqttClient(&wifiClient, IO_SERVER, IO_PORT, IO_USERNAME, IO_KEY);
+
+Adafruit_MQTT_Publish brightnessFeed = Adafruit_MQTT_Publish(&mqttClient, IO_USERNAME "/feeds/light-data");
+Adafruit_MQTT_Publish statusFeed = Adafruit_MQTT_Publish(&mqttClient, IO_USERNAME "/feeds/light-status");
+
+bool isBright = false; 
+unsigned long lastNormalLightMillis = 0;
+const long normalLightInterval = 5000;
+
+void setupWiFi() {
+  Serial.print("Conectando ao Wi-Fi...");
+  WiFi.begin(NETWORK_SSID, NETWORK_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("Conexão Wi-Fi estabelecida!");
+}
+
+void connectToMQTT() {
+  while (!mqttClient.connected()) {
+    Serial.print("Tentando conexão MQTT...");
+    int ret = mqttClient.connect();
+    if (ret == 0) {
+      Serial.println("Conectado ao MQTT!");
+    } else {
+      Serial.print("Falha na conexão MQTT. Código de erro: ");
+      Serial.println(mqttClient.connectErrorString(ret));
+      Serial.println("Reiniciando em 5 segundos...");
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  pinMode(ALERT_PIN, OUTPUT);
+  digitalWrite(ALERT_PIN, LOW);
+
+  setupWiFi();
+  connectToMQTT();
+}
+
+void loop() {
+  if (!mqttClient.connected()) {
+    connectToMQTT();
+  }
+
+  int sensorValue = analogRead(SENSOR_PIN);
+  int adjustedValue = 1000 - sensorValue;
+
+  Serial.print("Valor original do sensor: ");
+  Serial.println(sensorValue);
+  Serial.print("Valor ajustado: ");
+  Serial.println(adjustedValue);
+
+  if (!brightnessFeed.publish(adjustedValue)) {
+    Serial.println("Erro ao publicar dados de brilho.");
+  } else {
+    Serial.println("Dados de brilho enviados com sucesso.");
+  }
+
+  if (sensorValue < BRIGHT_THRESHOLD && !isBright) {
+    isBright = true;
+    if (!statusFeed.publish("Luz Excessiva")) {
+      Serial.println("Erro ao enviar status de luz excessiva.");
+    } else {
+      Serial.println("Status de luz excessiva enviado.");
+    }
+    digitalWrite(ALERT_PIN, HIGH);
+    Serial.println("Buzzer ligado (luz excessiva).");
+
+  } else if (sensorValue > NORMAL_THRESHOLD && isBright) {
+    isBright = false;
+    digitalWrite(ALERT_PIN, LOW);
+    Serial.println("Buzzer desligado (luz normal).");
+  }
+
+  unsigned long currentMillis = millis();
+  if (!isBright && (currentMillis - lastNormalLightMillis >= normalLightInterval)) {
+    lastNormalLightMillis = currentMillis;
+    if (!statusFeed.publish("Luz Normal")) {
+      Serial.println("Erro ao enviar status de luz normal.");
+    } else {
+      Serial.println("Status de luz normal enviado.");
+    }
+  }
+
+  mqttClient.processPackets(10);
+  delay(5000);
+}
